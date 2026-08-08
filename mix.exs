@@ -1,7 +1,7 @@
 defmodule Scry.Engine.ETS.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "1.0.0"
 
   # `mix precommit` includes `test` as a step; without this, Mix runs
   # the whole alias chain (including `mix test`) in :dev, and `mix test`
@@ -83,8 +83,8 @@ defmodule Scry.Engine.ETS.MixProject do
 
   defp description do
     "A real, kind-independent Scry.Core.EngineBehaviour implementation over native ETS " <>
-      "tables -- fetch/3 pushes a single top-level key-equality predicate down to an " <>
-      "O(1) :ets.lookup/2, falling back to a full scan for anything else."
+      "tables -- a real :ets.lookup/2 for key-equality, a real :ets.select/2 match spec " <>
+      "for other translatable WHERE shapes, falling back to a full scan for anything else."
   end
 
   defp package do

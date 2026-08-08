@@ -1,13 +1,16 @@
 defmodule Scry.Engine.ETSTest do
   @moduledoc """
-  `Scry.Engine.ETS` -- confirms `fetch/2` is a plain full scan,
-  `fetch/3` takes the real `:ets.lookup/2` path only for a single
-  top-level equality predicate on a source's own declared key field
-  (falling back to a full scan for everything else: no declared key,
-  a non-key field, a compound predicate, no `wheres` at all), that
-  `fetch/2` and `fetch/3` agree on results whenever both apply, and
-  that this all composes end to end through a real
-  `Scry.Core.Executor.run/4` call.
+  `Scry.Engine.ETS` -- confirms `execute/3` takes the real
+  `:ets.lookup/2` path only for a single top-level equality predicate
+  on a source's own declared key field, takes the real
+  `:ets.select/2` match-spec path for other translatable `WHERE`
+  shapes (a real capability gain over the pre-pivot single-key-only
+  narrowing), falls back to a full `:ets.tab2list/1` scan only when
+  nothing in `wheres` translates at all, and that every path agrees on
+  results and composes correctly end to end through a real `Scry.Core.
+  Executor.run/4` call -- `GROUP BY`/aggregates included, since ETS has
+  no native primitive for those and `Scry.Core.QueryOps.run_flat/3`
+  always finishes the job regardless of which narrowing path ran.
   """
 
   use ExUnit.Case, async: true
@@ -16,86 +19,144 @@ defmodule Scry.Engine.ETSTest do
   alias Scry.Engine.ETS
   alias Scry.Engine.ETS.Conn
 
+  @select [{:field, ["id"]}, {:field, ["name"]}, {:field, ["age"]}]
+
   @users [
     %{"id" => 1, "name" => "Alice", "age" => 30},
     %{"id" => 2, "name" => "Bob", "age" => 17}
   ]
 
-  describe "fetch/2" do
-    test "returns every row for a known source" do
-      conn = Conn.new(%{["users"] => @users}, keys: [{["users"], "id"}])
+  defp materialize({:ok, rows}), do: {:ok, Enum.to_list(rows)}
+  defp materialize(other), do: other
 
-      assert {:ok, rows} = ETS.fetch(conn, ["users"])
-      assert Enum.sort_by(rows, & &1["id"]) == @users
-    end
-
-    test "returns a clear error for an unknown source, never raises" do
-      assert ETS.fetch(Conn.new(), ["orders"]) == {:error, {:no_such_source, ["orders"]}}
-    end
-  end
-
-  describe "fetch/3 -- key-field pushdown" do
+  describe "execute/3 -- key-field pushdown (:ets.lookup/2)" do
     setup do
       {:ok, conn: Conn.new(%{["users"] => @users}, keys: [{["users"], "id"}])}
     end
 
     test "a single equality predicate on the declared key uses :ets.lookup/2", %{conn: conn} do
-      query = %Query{source: ["users"], wheres: [{:cmp, :eq, ["id"], 1}]}
+      query = %Query{source: ["users"], wheres: [{:cmp, :eq, ["id"], 1}], select: @select}
 
-      assert {:ok, [%{"id" => 1, "name" => "Alice"}]} = ETS.fetch(conn, ["users"], query)
+      assert {:ok, [%{"id" => 1, "name" => "Alice", "age" => 30}]} =
+               materialize(ETS.execute(conn, query, %{}))
     end
 
     test "a key miss returns an empty result, not an error", %{conn: conn} do
-      query = %Query{source: ["users"], wheres: [{:cmp, :eq, ["id"], 999}]}
+      query = %Query{source: ["users"], wheres: [{:cmp, :eq, ["id"], 999}], select: @select}
 
-      assert ETS.fetch(conn, ["users"], query) == {:ok, []}
+      assert materialize(ETS.execute(conn, query, %{})) == {:ok, []}
     end
 
-    test "a predicate on a non-key field falls back to a full scan", %{conn: conn} do
-      query = %Query{source: ["users"], wheres: [{:cmp, :eq, ["name"], "Alice"}]}
-
-      assert {:ok, rows} = ETS.fetch(conn, ["users"], query)
-      assert Enum.sort_by(rows, & &1["id"]) == @users
-    end
-
-    test "a compound predicate falls back to a full scan", %{conn: conn} do
+    test "a {:param, name} key value resolves against params", %{conn: conn} do
       query = %Query{
         source: ["users"],
-        wheres: [{:and, {:cmp, :eq, ["id"], 1}, {:cmp, :eq, ["name"], "Alice"}}]
+        wheres: [{:cmp, :eq, ["id"], {:param, "id"}}],
+        select: @select
       }
 
-      assert {:ok, rows} = ETS.fetch(conn, ["users"], query)
+      assert {:ok, [%{"id" => 2, "name" => "Bob", "age" => 17}]} =
+               materialize(ETS.execute(conn, query, %{"id" => 2}))
+    end
+  end
+
+  describe "execute/3 -- match-spec pushdown (:ets.select/2)" do
+    setup do
+      {:ok, conn: Conn.new(%{["users"] => @users}, keys: [{["users"], "id"}])}
+    end
+
+    test "a predicate on a non-key field still narrows via a real match-spec select", %{
+      conn: conn
+    } do
+      query = %Query{source: ["users"], wheres: [{:cmp, :eq, ["name"], "Alice"}], select: @select}
+
+      assert {:ok, [%{"id" => 1, "name" => "Alice", "age" => 30}]} =
+               materialize(ETS.execute(conn, query, %{}))
+    end
+
+    test "a compound (AND) predicate narrows via match-spec, not a full scan", %{conn: conn} do
+      query = %Query{
+        source: ["users"],
+        wheres: [{:and, {:cmp, :gt, ["age"], 18}, {:cmp, :eq, ["name"], "Alice"}}],
+        select: @select
+      }
+
+      assert {:ok, [%{"id" => 1, "name" => "Alice", "age" => 30}]} =
+               materialize(ETS.execute(conn, query, %{}))
+    end
+
+    test "an OR predicate narrows via match-spec", %{conn: conn} do
+      query = %Query{
+        source: ["users"],
+        wheres: [{:or, {:cmp, :eq, ["name"], "Alice"}, {:cmp, :eq, ["name"], "Bob"}}],
+        select: @select
+      }
+
+      assert {:ok, rows} = materialize(ETS.execute(conn, query, %{}))
       assert Enum.sort_by(rows, & &1["id"]) == @users
     end
 
     test "a query with no wheres falls back to a full scan", %{conn: conn} do
-      query = %Query{source: ["users"], wheres: []}
+      query = %Query{source: ["users"], wheres: [], select: @select}
 
-      assert {:ok, rows} = ETS.fetch(conn, ["users"], query)
+      assert {:ok, rows} = materialize(ETS.execute(conn, query, %{}))
       assert Enum.sort_by(rows, & &1["id"]) == @users
     end
 
-    test "a {:field, _} right-hand side is not a literal, falls back to a full scan", %{
-      conn: conn
-    } do
-      query = %Query{source: ["users"], wheres: [{:cmp, :eq, ["id"], {:field, ["age"]}}]}
+    test "a {:field, _} right-hand side doesn't translate, falls back to a full scan, still evaluates correctly",
+         %{conn: conn} do
+      # `id = age` is never true for either fixture row -- this proves
+      # the untranslatable predicate still fell back to a real,
+      # correct per-row evaluation (an empty match-spec guard list
+      # would wrongly match everything; a silently-dropped predicate
+      # would wrongly return every row) rather than either extreme.
+      query = %Query{
+        source: ["users"],
+        wheres: [{:cmp, :eq, ["id"], {:field, ["age"]}}],
+        select: @select
+      }
 
-      assert {:ok, rows} = ETS.fetch(conn, ["users"], query)
-      assert Enum.sort_by(rows, & &1["id"]) == @users
+      assert materialize(ETS.execute(conn, query, %{})) == {:ok, []}
     end
 
-    test "no declared key on the source falls back to a full scan" do
+    test "no declared key on the source still narrows non-key predicates via match-spec" do
       conn = Conn.new(%{["users"] => @users})
-      query = %Query{source: ["users"], wheres: [{:cmp, :eq, ["id"], 1}]}
+      query = %Query{source: ["users"], wheres: [{:cmp, :eq, ["name"], "Bob"}], select: @select}
 
-      assert {:ok, rows} = ETS.fetch(conn, ["users"], query)
-      assert Enum.sort_by(rows, & &1["id"]) == @users
+      assert {:ok, [%{"id" => 2, "name" => "Bob", "age" => 17}]} =
+               materialize(ETS.execute(conn, query, %{}))
     end
 
-    test "an unknown source is still a clear error" do
-      query = %Query{source: ["orders"], wheres: []}
+    test "a nil-valued field still reaches QueryOps.run_flat/3's own null-safety hard error on pull, never silently excluded" do
+      conn = Conn.new(%{["accounts"] => [%{"id" => 1, "balance" => nil}]})
+      query = %Query{source: ["accounts"], wheres: [{:cmp, :gt, ["balance"], 0}], select: []}
 
-      assert ETS.fetch(Conn.new(), ["orders"], query) == {:error, {:no_such_source, ["orders"]}}
+      assert {:ok, rows} = ETS.execute(conn, query, %{})
+
+      assert_raise ArgumentError, ~r/null-safety/, fn ->
+        Enum.to_list(rows)
+      end
+    end
+
+    test "the explicit nil-check idiom (field = nil) still works via match-spec, no hard error" do
+      conn =
+        Conn.new(%{
+          ["accounts"] => [%{"id" => 1, "balance" => nil}, %{"id" => 2, "balance" => 5}]
+        })
+
+      query = %Query{
+        source: ["accounts"],
+        wheres: [{:cmp, :eq, ["balance"], nil}],
+        select: [{:field, ["id"]}, {:field, ["balance"]}]
+      }
+
+      assert materialize(ETS.execute(conn, query, %{})) == {:ok, [%{"id" => 1, "balance" => nil}]}
+    end
+
+    test "an unknown source is still a clear, tagged error" do
+      query = %Query{source: ["orders"], wheres: [], select: []}
+
+      assert ETS.execute(Conn.new(), query, %{}) ==
+               {:error, {:query_error, {:no_such_source, ["orders"]}}}
     end
   end
 
@@ -113,7 +174,7 @@ defmodule Scry.Engine.ETSTest do
       assert Cursor.to_list(cursor) == [%{"name" => "Alice"}]
     end
 
-    test "a non-key filter still executes correctly through the full-scan fallback" do
+    test "a non-key filter executes correctly through the match-spec narrowing path" do
       conn = Conn.new(%{["users"] => @users}, keys: [{["users"], "id"}])
 
       query = %Query{
@@ -124,6 +185,34 @@ defmodule Scry.Engine.ETSTest do
 
       assert {:ok, cursor} = Executor.run(query, ETS, conn)
       assert Cursor.to_list(cursor) == [%{"name" => "Alice"}]
+    end
+
+    test "GROUP BY/aggregate still works correctly -- ETS has no native primitive, QueryOps.run_flat/3 always does the work" do
+      conn =
+        Conn.new(%{
+          ["orders"] => [
+            %{"customer_id" => 1, "total" => 50},
+            %{"customer_id" => 1, "total" => 75},
+            %{"customer_id" => 2, "total" => 20}
+          ]
+        })
+
+      query = %Query{
+        source: ["orders"],
+        group_bys: [["customer_id"]],
+        select: [
+          {:field, ["customer_id"]},
+          {:computed, "total", {:call, "sum", [{:field, ["total"]}]}}
+        ]
+      }
+
+      assert {:ok, cursor} = Executor.run(query, ETS, conn)
+
+      assert Enum.sort(Cursor.to_list(cursor)) ==
+               Enum.sort([
+                 %{"customer_id" => 1, "total" => 125},
+                 %{"customer_id" => 2, "total" => 20}
+               ])
     end
   end
 end

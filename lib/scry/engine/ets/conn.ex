@@ -1,18 +1,19 @@
 defmodule Scry.Engine.ETS.Conn do
   @moduledoc """
-  The "connection" `Scry.Engine.ETS.fetch/2,3` reads from -- one ETS
+  The "connection" `Scry.Engine.ETS.execute/3` reads from -- one ETS
   `:set` table per source, created in (and owned by) the calling
   process, matching the connection/config struct every real adapter
   exposes (impl_spec.md §2).
 
   A source's own table is optionally backed by a caller-declared *key
   field* (`new/2`'s own `keys:` option, e.g. `{["users"], "id"}`) --
-  this is what lets `Scry.Engine.ETS.fetch/3` recognize a single
+  this is what lets `Scry.Engine.ETS.execute/3` recognize a single
   top-level equality predicate on that field and turn it into a real
-  `:ets.lookup/2` instead of a full scan. A source with no declared key
-  still works through both `fetch/2` and `fetch/3` -- `fetch/3` simply
-  always falls back to a full scan for it, the same "engine may
-  decline to optimize" posture every engine in this family has.
+  `:ets.lookup/2` instead of a scan. A source with no declared key
+  still works fine -- `execute/3` simply always uses its own match-spec
+  compiler (or a full scan, if nothing in `WHERE` translates) for it
+  instead, the same "engine may decline to optimize a given shape"
+  posture every engine in this family has.
 
   Every table is created `:protected` (the ETS default): the owning
   process can read and write it, any other process can only read it --

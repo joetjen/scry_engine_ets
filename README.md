@@ -2,10 +2,13 @@
 
 A real, kind-independent [`Scry.Core.EngineBehaviour`](https://github.com/joetjen/scry_core)
 implementation over native [ETS](https://www.erlang.org/doc/man/ets.html)
-tables — `fetch/2` (a full `:ets.tab2list/1`) plus a real `fetch/3`:
-a single top-level equality predicate on a table's own declared key
-field becomes an O(1) `:ets.lookup/2`, instead of a full scan filtered
-client-side.
+tables — a single top-level equality predicate on a table's own declared
+key field becomes an O(1) `:ets.lookup/2`; other translatable `WHERE`
+shapes (`==`/`/=`/`<`/`>`/`=<`/`>=`, boolean-combined) compile into a
+real `:ets.select/2` match spec; anything else falls back to a full
+`:ets.tab2list/1` scan. `GROUP BY`/aggregates/sorting/window functions
+have no ETS-native equivalent at all, so `Scry.Core.QueryOps.run_flat/3`
+always finishes the job over whatever the narrowing step produced.
 
 Kind-independent by construction, like every engine in this family: it
 only ever sees the `source`/`Scry.Core.Query.t()` shapes `Scry.Core.
@@ -35,10 +38,10 @@ rows = Scry.Core.Cursor.to_list(cursor)
 ```
 
 `Conn.put/3` inserts more rows into an existing (or new) source's table
-after the fact. A source with no declared key still works through both
-`fetch/2` and `fetch/3` — `fetch/3` just always falls back to a full
-scan for it, the same "engine may decline to optimize" posture every
-engine in this family has.
+after the fact. A source with no declared key still works fine —
+`execute/3` simply always uses its own match-spec compiler (or a full
+scan) for it instead, the same "engine may decline to optimize a given
+shape" posture every engine in this family has.
 
 The ETS table backing each source is created in, and owned by, the
 calling process — it disappears when that process exits, exactly like
@@ -49,7 +52,7 @@ any other ETS table with no explicit heir.
 ```elixir
 def deps do
   [
-    {:scry_engine_ets, "~> 0.1.0"}
+    {:scry_engine_ets, "~> 1.0"}
   ]
 end
 ```
