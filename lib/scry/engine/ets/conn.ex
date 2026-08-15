@@ -3,7 +3,7 @@ defmodule Scry.Engine.ETS.Conn do
   The "connection" `Scry.Engine.ETS.execute/3` reads from -- one ETS
   `:set` table per source, created in (and owned by) the calling
   process, matching the connection/config struct every real adapter
-  exposes (impl_spec.md §2).
+  exposes.
 
   A source's own table is optionally backed by a caller-declared *key
   field* (`new/2`'s own `keys:` option, e.g. `{["users"], "id"}`) --

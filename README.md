@@ -17,10 +17,8 @@ eventually `via`/`hops`, ...) has been lowered away. No backend of its
 own — an in-process, ephemeral engine, not for production use across
 process boundaries.
 
-Source: <https://github.com/joetjen/scry_engine_ets>. Specs live in the
-separate [`scry`](https://github.com/joetjen/scry) repository; the
-behaviour this implements lives in
-[`scry_core`](https://github.com/joetjen/scry_core).
+Source: <https://github.com/joetjen/scry_engine_ets>. The behaviour this
+implements lives in [`scry_core`](https://github.com/joetjen/scry_core).
 
 ## Usage
 
